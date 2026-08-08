@@ -74,3 +74,11 @@ CREATE TABLE bulk_upload_errors (
     error_message           VARCHAR2(500),
     logged_at              TIMESTAMP DEFAULT SYSTIMESTAMP
 );
+
+CREATE INDEX idx_demat_accounts_client_id ON demat_accounts(client_id);
+CREATE INDEX idx_account_requests_account_id ON account_requests(account_id);
+CREATE INDEX idx_account_requests_client_id ON account_requests(client_id);
+CREATE INDEX idx_account_history_account_id ON account_history(account_id);
+CREATE INDEX idx_account_history_request_id ON account_history(request_id);
+CREATE INDEX idx_bulk_upload_errors_batch_id ON bulk_upload_errors(batch_id);
+CREATE INDEX idx_demat_accounts_status ON demat_accounts(account_status);
