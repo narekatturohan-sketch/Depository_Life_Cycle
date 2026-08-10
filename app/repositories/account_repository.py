@@ -103,7 +103,7 @@ class AccountRepository:
                 "client_id": row[2],
                 "account_status": row[3],
                 "nominee_name": row[4],
-                "opened_date": row[5],
+                "opened_date": row[5].date() if row[5] else None,
             }
 
         except oracledb.DatabaseError:

@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from app.database import init_pool, close_pool, get_connection
+from app.routers import accounts
 
 app = FastAPI(title="Demat Account Lifecycle & Client Master API")
 
@@ -14,3 +15,5 @@ def shutdown_event():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+app.include_router(accounts.router)
