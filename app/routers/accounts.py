@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 import oracledb
 from app.database import get_connection
 from app.models.schemas import AccountCreate, AccountResponse
+from app.repositories.account_repository import AccountNotFoundError, InvalidStateError
 from app.services.account_service import AccountService
+from app.models.schemas import (
+    AccountCreate, AccountResponse, ModificationRequest, RequestResponse, RejectRequest,
+)
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"])
 
@@ -14,5 +18,53 @@ def create_account(
     service = AccountService(connection)
     try:
         return service.create_account(data)
+    except oracledb.DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.post("/{account_id}/modify", response_model=RequestResponse, status_code=201)
+def submit_modification(
+    account_id: int,
+    data: ModificationRequest,
+    connection: oracledb.Connection = Depends(get_connection),
+):
+    service = AccountService(connection)
+    try:
+        return service.submit_modification(account_id, data)
+    except AccountNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except oracledb.DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.post("/requests/{request_id}/approve")
+def approve_request(request_id: int, connection: oracledb.Connection = Depends(get_connection)):
+    service = AccountService(connection)
+    try:
+        return service.approve_modification(request_id)
+    except AccountNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except oracledb.DatabaseError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.post("/requests/{request_id}/reject")
+def reject_request(
+    request_id: int,
+    data: RejectRequest,
+    connection: oracledb.Connection = Depends(get_connection),
+):
+    service = AccountService(connection)
+    try:
+        return service.reject_modification(request_id, data.reason)
+    except AccountNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except oracledb.DatabaseError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

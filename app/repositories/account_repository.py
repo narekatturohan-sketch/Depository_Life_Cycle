@@ -1,4 +1,6 @@
 import oracledb
+import json
+from datetime import datetime
 from app.models.schemas import AccountCreate
 
 
@@ -111,3 +113,213 @@ class AccountRepository:
             raise
         finally:
             cursor.close()
+
+    def submit_modification(self, account_id: int, changes: dict) -> dict:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT account_status FROM demat_accounts WHERE account_id = :id for UPDATE",
+                id=account_id,
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise AccountNotFoundError(f"Account ID {account_id} not found.")
+            else:
+                if row[0] != "ACTIVE":
+                    raise InvalidStateError(
+                        f"Cannot modify account in state {row[0]}."
+                    )
+
+            request_id_var = cursor.var(int)
+            cursor.execute(
+                """
+                INSERT into account_requests
+                (
+                    account_id,
+                    request_type,
+                    request_payload,
+                    request_status
+                )
+                VALUES
+                (
+                    :account_id,
+                    'MODIFY',
+                    :payload,
+                    'PENDING'
+                )
+                RETURNING request_id INTO :request_id
+                """,
+                account_id=account_id,
+                payload=json.dumps(changes),
+                request_id=request_id_var,
+            )
+            request_id = request_id_var.getvalue()[0]
+
+            cursor.execute(
+                """
+                UPDATE demat_accounts
+                SET account_status = 'MODIFICATION_PENDING',
+                updated_at = SYSTIMESTAMP
+                WHERE account_id = :id
+                """,
+                id=account_id
+            )
+
+            self.conn.commit()
+            return {"request_id": request_id, "account_id": account_id, 
+                    "request_type": "MODIFY", "request_status": "PENDING",
+                    "requested_at": datetime.now().isoformat()}
+
+        except oracledb.DatabaseError:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def approve_modification(self, request_id: int) -> dict:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT account_id, request_type, request_payload," \
+                "request_status FROM account_requests WHERE request_id = :id for UPDATE",
+                id=request_id,
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise AccountNotFoundError(f"Request ID {request_id} not found.")
+
+            account_id, request_type, request_payload, request_status = row
+            if request_status != "PENDING":
+                raise InvalidStateError(
+                    f"Cannot approve request in state {request_status}."
+                )
+            if request_type != "MODIFY":
+                raise InvalidStateError(
+                    f"Cannot approve request of type {request_type}."
+                )
+
+            changes = json.loads(request_payload.read() if hasattr(request_payload, "read") else request_payload)
+
+            allowed_fields = {"nominee_name", "bank_account_no", "bank_ifsc"}
+            client_fields = {"address_line1", "address_line2", "city", "state", "pincode", "mobile", "email"}
+
+            cursor.execute(
+                "SELECT client_id, nominee_name, bank_account_no, bank_ifsc "
+                "FROM demat_accounts WHERE account_id = :id for UPDATE",
+                id=account_id,
+            )
+            acc_row = cursor.fetchone()
+            client_id = acc_row[0]
+            current_account_status = {
+                "nominee_name": acc_row[1],
+                "bank_account_no": acc_row[2],
+                "bank_ifsc": acc_row[3],
+            }
+
+            for field, new_value in changes.items():
+                if field in allowed_fields:
+                    old_value = current_account_status.get(field)
+                    if old_value != new_value:
+                        cursor.execute(
+                            f"UPDATE demat_accounts SET {field} = :new_value, updated_at = SYSTIMESTAMP WHERE account_id = :id",
+                            new_value=new_value,
+                            id=account_id,
+                        )
+                        cursor.execute(
+                            f"""INSERT INTO account_history
+                            (
+                                account_id, request_id, field_changed, old_value, new_value, changed_by
+                            ) VALUES (:account_id, :request_id, :field_changed, :old_value, :new_value, 'SYSTEM')""",
+                            account_id=account_id,
+                            request_id=request_id,
+                            field_changed=field,
+                            old_value=old_value,
+                            new_value=new_value,
+                        )
+                elif field in client_fields:
+                    cursor.execute(
+                        f"SELECT {field} FROM clients WHERE client_id = :id for UPDATE",
+                        id=client_id,
+                    )
+                    client_row = cursor.fetchone()
+                    old_value = client_row[0]
+                    if old_value != new_value:
+                        cursor.execute(
+                            f"""UPDATE clients 
+                            SET {field} = :new_value,
+                            updated_at = SYSTIMESTAMP
+                            WHERE client_id = :id""",
+                            new_value=new_value,
+                            id=client_id,
+                        )
+                        cursor.execute(
+                            f"""INSERT INTO account_history
+                            (
+                                account_id, request_id, field_changed, old_value, new_value, changed_by
+                            ) VALUES (:account_id, :request_id, :field_changed, :old_value, :new_value, 'SYSTEM')""",
+                            account_id=account_id,
+                            request_id=request_id,
+                            field_changed=field,
+                            old_value=old_value,
+                            new_value=new_value,
+                        )
+
+            cursor.execute(
+                "UPDATE account_requests SET request_status = 'APPROVED', "
+                "resolved_at = SYSTIMESTAMP WHERE request_id = :id",
+                id=request_id,
+            )
+            cursor.execute(
+                "UPDATE demat_accounts SET account_status = 'ACTIVE', "
+                "updated_at = SYSTIMESTAMP WHERE account_id = :id",
+                id=account_id,
+            )
+
+            self.conn.commit()
+            return {"request_id": request_id, "status": "APPROVED", "account_id": account_id}
+        except (oracledb.DatabaseError, AccountNotFoundError, InvalidStateError):
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def reject_modification(self, request_id: int, reason: str) -> dict:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT account_id, request_status FROM account_requests "
+                "WHERE request_id = :id FOR UPDATE",
+                id=request_id,
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise AccountNotFoundError(f"Request {request_id} not found")
+            account_id, status = row
+            if status != "PENDING":
+                raise InvalidStateError(f"Request is {status}, must be PENDING")
+
+            cursor.execute(
+                "UPDATE account_requests SET request_status = 'REJECTED', "
+                "rejection_reason = :reason, resolved_at = SYSTIMESTAMP "
+                "WHERE request_id = :id",
+                reason=reason, id=request_id,
+            )
+            cursor.execute(
+                "UPDATE demat_accounts SET account_status = 'ACTIVE', "
+                "updated_at = SYSTIMESTAMP WHERE account_id = :id",
+                id=account_id,
+            )
+
+            self.conn.commit()
+            return {"request_id": request_id, "status": "REJECTED", "account_id": account_id}
+        except (oracledb.DatabaseError, AccountNotFoundError, InvalidStateError):
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+class AccountNotFoundError(Exception):
+    pass
+
+class InvalidStateError(Exception):
+    pass
