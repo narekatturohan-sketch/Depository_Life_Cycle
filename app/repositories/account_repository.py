@@ -318,6 +318,137 @@ class AccountRepository:
         finally:
             cursor.close()
 
+    def submit_closure(self, account_id:int, reason:str) -> dict:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                """SELECT account_status FROM demat_accounts WHERE account_id = :id for UPDATE""",
+                id=account_id,
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise AccountNotFoundError(f"Account ID {account_id} not Found.")
+            else:
+                if row[0] != "ACTIVE":
+                    raise InvalidStateError(f"Account is in state {row[0]}, must be ACTIVE to submit closure request.")
+
+            request_id_var = cursor.var(int)
+
+            cursor.execute(
+                """
+                INSERT INTO account_requests (
+                    account_id, request_type, request_payload, request_status
+                ) VALUES (
+                    :account_id, 'CLOSE', :payload, 'PENDING'
+                )
+                RETURNING request_id INTO :request_id
+                """,
+                account_id=account_id,
+                payload=json.dumps({"reason": reason}),
+                request_id=request_id_var,
+            )
+            request_id = request_id_var.getvalue()[0]
+
+            cursor.execute("""
+                UPDATE demat_accounts
+                SET account_status = 'CLOSURE_PENDING', updated_at = SYSTIMESTAMP
+                WHERE account_id = :id
+                """,
+                id=account_id,
+            )
+
+            self.conn.commit()
+            return {"request_id": request_id, "account_id": account_id,
+                     "request_type": "CLOSE", "request_status": "PENDING",
+                     "requested_at": datetime.now().isoformat()}
+        except (oracledb.DatabaseError, AccountNotFoundError, InvalidStateError):
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def approve_closure(self, request_id: int) -> dict:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT account_id, request_type, request_status "
+                "FROM account_requests WHERE request_id = :id FOR UPDATE",
+                id=request_id,
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise AccountNotFoundError(f"Request {request_id} not found")
+            account_id, request_type, status = row
+            if status != "PENDING":
+                raise InvalidStateError(f"Request is {status}, must be PENDING")
+            if request_type != "CLOSE":
+                raise InvalidStateError(f"Request type is {request_type}, not CLOSE")
+
+            cursor.execute(
+                "UPDATE demat_accounts SET account_status = 'CLOSED', "
+                "closed_date = SYSDATE, updated_at = SYSTIMESTAMP "
+                "WHERE account_id = :id",
+                id=account_id,
+            )
+            cursor.execute(
+                """
+                INSERT INTO account_history (
+                    account_id, request_id, field_changed, old_value, new_value, changed_by
+                ) VALUES (:acc_id, :req_id, 'ACCOUNT_STATUS', 'ACTIVE', 'CLOSED', 'SYSTEM')
+                """,
+                acc_id=account_id, req_id=request_id,
+            )
+            cursor.execute(
+                "UPDATE account_requests SET request_status = 'APPROVED', "
+                "resolved_at = SYSTIMESTAMP WHERE request_id = :id",
+                id=request_id,
+            )
+
+            self.conn.commit()
+            return {"request_id": request_id, "status": "APPROVED", "account_id": account_id}
+        except (oracledb.DatabaseError, AccountNotFoundError, InvalidStateError):
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def reject_closure(self, request_id: int, reason: str) -> dict:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT account_id, request_type, request_status "
+                "FROM account_requests WHERE request_id = :id FOR UPDATE",
+                id=request_id,
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise AccountNotFoundError(f"Request {request_id} not found")
+            account_id, request_type, status = row
+            if status != "PENDING":
+                raise InvalidStateError(f"Request is {status}, must be PENDING")
+            if request_type != "CLOSE":
+                raise InvalidStateError(f"Request type is {request_type}, not CLOSE")
+
+            cursor.execute(
+                "UPDATE account_requests SET request_status = 'REJECTED', "
+                "rejection_reason = :reason, resolved_at = SYSTIMESTAMP "
+                "WHERE request_id = :id",
+                reason=reason, id=request_id,
+            )
+            cursor.execute(
+                "UPDATE demat_accounts SET account_status = 'ACTIVE', "
+                "updated_at = SYSTIMESTAMP WHERE account_id = :id",
+                id=account_id,
+            )
+
+            self.conn.commit()
+            return {"request_id": request_id, "status": "REJECTED", "account_id": account_id}
+        except (oracledb.DatabaseError, AccountNotFoundError, InvalidStateError):
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
 class AccountNotFoundError(Exception):
     pass
 

@@ -101,12 +101,15 @@ class ModificationRequest(BaseModel):
     def changed_fields(self) -> dict:
         return self.model_dump(exclude_unset=True, exclude_none=True)
 
+class ClosureRequest(BaseModel):
+    reason: str = Field(..., min_length=10, max_length=500)
+
 class RequestResponse(BaseModel):
     request_id: int
     account_id: Optional[int] = None
     request_type: str
     request_status: str
-    requested_at: date
+    requested_at: str
 
     class Config:
         from_attributes = True

@@ -32,3 +32,13 @@ class AccountService:
 
     def reject_modification(self, request_id: int, reason: str) -> dict:
         return self.repository.reject_modification(request_id, reason)
+
+    def submit_closure(self, account_id: int, reason: str) -> RequestResponse:
+        result = self.repository.submit_closure(account_id, reason)
+        return RequestResponse(**result)
+
+    def approve_closure(self, request_id: int) -> dict:
+        return self.repository.approve_closure(request_id)
+
+    def reject_closure(self, request_id: int, reason: str) -> dict:
+        return self.repository.reject_closure(request_id, reason)
