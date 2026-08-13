@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from app.database import init_pool, close_pool, get_connection
-from app.routers import accounts
+from app.routers import accounts, bulk_upload
 
 app = FastAPI(title="Demat Account Lifecycle & Client Master API")
 
@@ -17,3 +17,5 @@ def health_check():
     return {"status": "healthy"}
 
 app.include_router(accounts.router)
+app.include_router(accounts.router)
+app.include_router(bulk_upload.router)

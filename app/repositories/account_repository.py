@@ -2,6 +2,7 @@ import oracledb
 import json
 from datetime import datetime
 from app.models.schemas import AccountCreate
+import traceback
 
 
 class DuplicatePanError(Exception):
@@ -448,6 +449,121 @@ class AccountRepository:
             raise
         finally:
             cursor.close()
+
+    def create_upload_batch(self, filename: str, total: int) -> int:
+        cursor = self.conn.cursor()
+        try:
+            batch_id_var = cursor.var(int)
+            cursor.execute(
+                """
+                INSERT INTO bulk_upload_batches (
+                    file_name,
+                    total_records,
+                    batch_status
+                )
+                VALUES (
+                    :filename,
+                    :total,
+                    'PROCESSING'
+                )
+                RETURNING batch_id INTO :batch_id
+                """,
+                filename=filename,
+                total=total,
+                batch_id=batch_id_var,
+            )
+            self.conn.commit()
+            return batch_id_var.getvalue()[0]
+        except oracledb.DatabaseError:
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def bulk_insert_accounts(self, rows: list, batch_id: int) -> int:
+        cursor = self.conn.cursor()
+        inserted = 0
+        chunk_size = 500
+        try:
+            for start in range(0, len(rows), chunk_size):
+                chunk = rows[start:start + chunk_size]
+
+                client_data = [
+                    {
+                        "pan_check": r.pan_number, "pan_val": r.pan_number,
+                        "name": r.full_name, "mobile": r.mobile, "email": r.email,
+                    }
+                    for r in chunk
+                ]
+                cursor.executemany(
+                    """
+                    MERGE INTO clients c
+                    USING (SELECT :pan_check AS pan_number FROM dual) src
+                    ON (c.pan_number = src.pan_number)
+                    WHEN NOT MATCHED THEN
+                        INSERT (pan_number, full_name, mobile, email)
+                        VALUES (:pan_val, :name, :mobile, :email)
+                    """,
+                    client_data,
+                )
+
+                account_data = [
+                    {"dp_id": r.dp_id, "pan": r.pan_number, "nominee": r.nominee_name}
+                    for r in chunk
+                ]
+                cursor.executemany(
+                    """
+                    INSERT INTO demat_accounts (dp_id, client_id, nominee_name)
+                    SELECT :dp_id, client_id, :nominee
+                    FROM clients WHERE pan_number = :pan
+                    """,
+                    account_data,
+                )
+                inserted += len(chunk)
+                self.conn.commit()
+
+            return inserted
+        except oracledb.DatabaseError:
+            traceback.print_exc()
+            self.conn.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def log_upload_errors(self, batch_id: int, invalid_rows: list):
+        cursor = self.conn.cursor()
+        try:
+            data = [
+                {"batch_id": batch_id, "row_num": row_num, "raw_val": raw, "msg": msg[:500]}
+                for row_num, raw, msg in invalid_rows
+            ]
+            cursor.executemany(
+                """
+                INSERT INTO bulk_upload_errors (batch_id, row_number, raw_data, error_message)
+                VALUES (:batch_id, :row_num, :raw_val, :msg)
+                """,
+                data,
+            )
+            self.conn.commit()
+        finally:
+            cursor.close()
+
+    def finalize_batch(self, batch_id: int, success_count: int, error_count: int, status: str):
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                """
+                UPDATE bulk_upload_batches
+                SET success_count = :success, error_count = :errors,
+                    batch_status = :status, completed_at = SYSTIMESTAMP
+                WHERE batch_id = :id
+                """,
+                success=success_count, errors=error_count, status=status, id=batch_id,
+            )
+            self.conn.commit()
+        finally:
+            cursor.close()
+
 
 class AccountNotFoundError(Exception):
     pass

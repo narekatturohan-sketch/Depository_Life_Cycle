@@ -116,3 +116,33 @@ class RequestResponse(BaseModel):
 
 class RejectRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
+
+class BulkUploadRow(BaseModel):
+    dp_id: str = Field(..., min_length=6, max_length=8)
+    pan_number: str = Field(..., min_length=10, max_length=10)
+    full_name: str = Field(..., min_length=1, max_length=150)
+    mobile: Optional[str] = Field(None, max_length=15)
+    email: Optional[str] = None
+    nominee_name: Optional[str] = None
+
+    @field_validator("pan_number")
+    @classmethod
+    def validate_pan(cls, v: str) -> str:
+        v = v.upper().strip()
+        if not re.match(r"^[A-Z]{5}[0-9]{4}[A-Z]$", v):
+            raise ValueError("PAN must be in format AAAAA9999A")
+        return v
+
+    @field_validator("mobile")
+    @classmethod
+    def validate_mobile(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not re.match(r"^[6-9]\d{9}$", v):
+            raise ValueError("Mobile number must be a valid 10-digit Indian number")
+        return v
+
+class BulkUploadResponse(BaseModel):
+    batch_id: int
+    total_records: int
+    success_count: int
+    error_count: int
+    batch_status: str
