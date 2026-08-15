@@ -146,3 +146,29 @@ class BulkUploadResponse(BaseModel):
     success_count: int
     error_count: int
     batch_status: str
+
+class HistoryEntry(BaseModel):
+    history_id: int
+    account_id: int
+    request_id: Optional[int]
+    field_changed: Optional[str]
+    old_value: Optional[str]
+    new_value: Optional[str]
+    changed_at: str
+    changed_by: str
+
+    class Config:
+        from_attributes = True
+
+class ClientMasterEntry(BaseModel):
+    client_id: int
+    pan_number: str
+    full_name: str
+    account_id: int
+    dp_id: str
+    account_status: str
+    opened_date: date
+    closed_date: Optional[date]
+
+    class Config:
+        from_attributes = True

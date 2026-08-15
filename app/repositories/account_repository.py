@@ -564,6 +564,70 @@ class AccountRepository:
         finally:
             cursor.close()
 
+    def get_account_history(self, account_id: int) -> list:
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                """ 
+                SELECT history_id, account_id, request_id, field_changed,
+                       old_value, new_value, changed_at, changed_by
+                FROM account_history
+                WHERE account_id = :id
+                ORDER BY changed_at DESC
+                """,
+                id=account_id,
+            )
+            rows = cursor.fetchall()
+            return [
+                {
+                    "history_id": r[0],
+                    "account_id": r[1],
+                    "request_id": r[2],
+                    "field_changed": r[3],
+                    "old_value": r[4],
+                    "new_value": r[5],
+                    "changed_at": r[6].isoformat(),
+                    "changed_by": r[7],
+                }
+                for r in rows
+            ]
+        finally:
+            cursor.close()
+
+    def get_client_master_report(self, status: str = None) -> list:
+        cursor = self.conn.cursor()
+        try:
+            query = """
+                SELECT c.client_id, c.pan_number, c.full_name,
+                       a.account_id, a.dp_id, a.account_status,
+                       a.opened_date, a.closed_date
+                FROM clients c
+                JOIN demat_accounts a ON a.client_id = c.client_id
+            """
+            params = {}
+            if status:
+                query += " WHERE a.account_status = :status"
+                params["status"] = status
+            query += " ORDER BY a.opened_date DESC"
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [
+                {
+                    "client_id": r[0],
+                    "pan_number": r[1],
+                    "full_name": r[2],
+                    "account_id": r[3],
+                    "dp_id": r[4],
+                    "account_status": r[5],
+                    "opened_date": r[6].date() if r[6] else None,
+                    "closed_date": r[7].date() if r[7] else None,
+                }
+                for r in rows
+            ]
+        finally:
+            cursor.close()    
+
 
 class AccountNotFoundError(Exception):
     pass

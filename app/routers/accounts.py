@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 import oracledb
+from typing import Optional, List
 from app.database import get_connection
 from app.models.schemas import AccountCreate, AccountResponse
 from app.repositories.account_repository import AccountNotFoundError, InvalidStateError
 from app.services.account_service import AccountService
 from app.models.schemas import (
-    AccountCreate, AccountResponse, ModificationRequest, RequestResponse, RejectRequest,ClosureRequest
+    AccountCreate, AccountResponse, ModificationRequest, RequestResponse, RejectRequest,ClosureRequest,
+    HistoryEntry, ClientMasterEntry
 )
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"])
@@ -114,3 +116,17 @@ def reject_closure(
         raise HTTPException(status_code=409, detail=str(e))
     except oracledb.DatabaseError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@router.get("/{account_id}/history", response_model=List[HistoryEntry])
+def get_account_history(account_id: int, connection: oracledb.Connection = Depends(get_connection)):
+    service = AccountService(connection)
+    return service.get_account_history(account_id)
+
+
+@router.get("/reports/client-master", response_model=List[ClientMasterEntry])
+def client_master_report(
+    status: Optional[str] = None,
+    connection: oracledb.Connection = Depends(get_connection),
+):
+    service = AccountService(connection)
+    return service.get_client_master_report(status)

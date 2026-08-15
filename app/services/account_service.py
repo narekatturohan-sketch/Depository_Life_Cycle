@@ -2,7 +2,7 @@ import oracledb
 from app.models.schemas import AccountCreate, AccountResponse
 from app.repositories.account_repository import AccountRepository
 from app.models.schemas import (
-    AccountCreate, AccountResponse, ModificationRequest, RequestResponse,
+    AccountCreate, AccountResponse, ModificationRequest, RequestResponse,HistoryEntry, ClientMasterEntry
 )
 from app.repositories.account_repository import (
     AccountRepository, AccountNotFoundError, InvalidStateError,
@@ -42,3 +42,11 @@ class AccountService:
 
     def reject_closure(self, request_id: int, reason: str) -> dict:
         return self.repository.reject_closure(request_id, reason)
+
+    def get_account_history(self, account_id: int) -> list:
+        rows = self.repository.get_account_history(account_id)
+        return [HistoryEntry(**r) for r in rows]
+
+    def get_client_master_report(self, status: str = None) -> list:
+        rows = self.repository.get_client_master_report(status)
+        return [ClientMasterEntry(**r) for r in rows]
